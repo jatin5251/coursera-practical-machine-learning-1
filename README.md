@@ -1,2 +1,3 @@
-# coursera-practical-machine-learning
-Project work of Practical Machine Learning course from Coursera
+# Project work of Practical Machine Learning course from Coursera
+
+
