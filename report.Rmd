@@ -1,0 +1,192 @@
+---
+title: "Detecting proper workout technique using machine learning algorithms"
+author: "Matti Lassila"
+date: "14 March 2016"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(randomForestSRC)
+library(caret)
+library(dplyr)
+library(data.table)
+library(ggRandomForests)
+options(rf.cores=detectCores(), mc.cores=detectCores())
+setwd('/Users/matti/Documents/2016/practical-machine-learning/')
+```
+
+## Introduction
+
+In this project the goal is to develop a model for discerning proper workout technique from incorrect ones based on data from three-axis gyro sensors on the belt, forearm, arm, and dumbell.
+
+The measured workout was performed by six male participants who  were asked to perform one set of 10 repetitions of the Unilateral Dumbbell Biceps Curl in five different fashions:
+
+1. exactly according to the specification (Class A)
+2. throwing the elbows to the front (Class B)
+3. lifting the dumbbell only halfway (Class C)
+4. lowering the dumbbell only halfway (Class D)
+5. throwing the hips to the front (Class E).
+
+Class A corresponds to the specified execution of the exercise, while the other 4 classes correspond to common mistakes. 
+
+
+## Prepare the dataset
+
+
+```{r load_dataset, eval=FALSE}
+
+# Download dataset from the web and save it to the disk for later use
+training_data_url <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv'
+test_data_url <- 'https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv'
+
+training_data <- fread(training_data_url)
+test_data <- fread(test_data_url)
+
+saveRDS(training_data,'training_data.Rdata')
+saveRDS(test_data,'test_data.Rdata')
+```
+
+```{r load_saved_dataset}
+test_data <- readRDS("test_data.Rdata")
+training_data <- readRDS("training_data.Rdata")
+```
+
+
+Lets have a quick look of data.
+
+```{r exploring_dataset}
+glimpse(training_data)
+```
+
+It seems that data has lot of non-available (NA) values and also zero-length strings which should also be interpreted as missing. Also, the first seven variables seem to be related to the test setting (such as name of the participant and timestamp) and there are not actual measurements. Therefore they should be excluded from the dataset as well as variables with too many missing values. For removing missing values, a cutoff limit of 95% is used. For remaining missing values, imputation (replacing missing data with substituted values) might be usable strategy.
+
+The following steps prepare data for analysis.
+
+At first mark non-available values with `NA`.
+```{r mark_na}
+training_data[training_data == "" ] <- NA
+test_data[test_data == "" ] <- NA
+```
+
+Delete variables with more than 95% of `NA`s
+
+```{r delete_na_variables}
+training_data<-training_data[, colSums(is.na(training_data)) < nrow(training_data) * 0.95, with=FALSE]
+```
+
+Select only variables which might have predictive power intuitively. Therefore, variables related to test setting should be excluded as mentioned.
+
+```{r select_variables}
+training_data <- training_data[,8:length(training_data), with=FALSE]
+```
+
+We have to execute same preparatory steps for test dataset too.
+
+```{r prepare_test_dataset}
+selected_variables <- colnames(training_data)[-53] # Variable no. 53 is the classe, value to be predicted.
+test_data <- test_data[,selected_variables,with=FALSE]
+```
+
+Finally we have to convert `classe` variable to a factor, as it is the catogorical variable which value we are trying to predict.
+
+```{r convert_target_variable}
+training_data <- training_data[, classe:= factor(training_data[,classe])]
+```
+ 
+Following the example of original paper discussing the dataset, we have decided to use random forest as a model. For the orginal paper see Velloso et al, 2013. 
+
+One advantage of random forests is a built in generalization error estimate eg. the Out-of-Bag prediction error estimate. The Out-of-Bag prediction error estimates have been shown
+to be nearly identical to n–fold cross validation estimates (Hastie et al,
+2009, 592-593). This feature of random forests allows us to get model fit and validation in
+one pass of the algorithm. If we were to use other kinds of models, creating a separate dataset for cross validation would be advisable.
+
+## Training the model
+
+```{r random-forest, eval=FALSE}
+
+set.seed(271828)
+har_rf <-  rfsrc(classe ~ ., 
+                 data = training_data, 
+                 na.action = "na.impute",
+                 nsplit = 5,
+                 ntree = 100
+      )
+saveRDS(har_rf,'har_rf.Rdata')
+```
+
+```{r load-random-forest-}
+har_rf <-  readRDS("har_rf.Rdata")
+```
+
+
+Lets see how well our first attempt succeeded. Reasonable goal is to strive for overall accuracy of at least 98.2 % which was reported in the original article discussing the dataset (see Velloso et al, 2013).
+
+```{r random-forest-evaluation}
+randomForestSRC::print.rfsrc(har_rf)
+```
+
+```{r error-estimate}
+oob_error <- gg_error(har_rf) 
+plot(oob_error) + theme_minimal()
+```
+
+The result seems to be really good. Overall out-of-bag error estimate is 0.41%, eg. accuracy of 99,6%. It is evident that there is no need to tune our model for accuracy, but it might be possible to tune the model to be more computationally efficient. 
+
+In real-world scenario, it might be desireable to be able to train the model in a low-power device. Therefore the next step could be to simplify the model by selecting only the variables which have greatest impact on model performance. We can also use smaller forest, as in the original study only 10 trees were used with satisfactory results.
+
+```{r vimp-visual-analysis}
+vimp <- gg_vimp(har_rf)
+plot(vimp) + theme_minimal()
+```
+
+Inspecting the VIMP chart visually, let's select only top 10 variables for creating a minimal random forest with 10 trees.
+
+```{r variable-selection}
+vimp <- data.table(vimp)
+high_impact_variables <- as.character(vimp[1:10,]$vars)
+minimal_training_data <- training_data[,c(high_impact_variables,'classe'),with=FALSE]
+```
+
+## Minimal random forest
+
+```{r minimal-random-forest, eval=FALSE}
+set.seed(271828)
+minimal_har_rf <-  rfsrc(
+  classe~.,
+  data = minimal_training_data,
+  na.action = "na.impute",
+  nsplit = 5,
+  ntree = 10
+  )
+saveRDS(minimal_har_rf,'minimal_har_rf.Rdata')
+```
+
+```{r load-minimal-random-forest}
+
+minimal_har_rf <-  readRDS("minimal_har_rf.Rdata")
+randomForestSRC::print.rfsrc(minimal_har_rf)
+```
+
+It seems that the random forest build with only ten features has worse prediction accurancy compared to the full model -- the out-of-bag error estimate is 3.86% -- but in the real-world situation, tradeoff between accuracy and computational cost might be acceptable. 
+
+For the purposes of this report, we'll use the full model for the prediction task.
+
+
+## Prediction
+
+```{r final-test}
+class_predicted <- predict(har_rf, test_data)
+```
+Object `class_predicted$class` contains predicted values which are omitted from this report to adhere Coursera Honor Code.
+
+## References
+
+Breiman, L & Cutler, A. (2004). Random Forests. <[https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr](https://www.stat.berkeley.edu/~breiman/RandomForests/cc_home.htm#ooberr)>
+
+Hastie T, Tibshirani R, Friedman JH (2009). The Elements of Statistical Learning: Data
+Mining, Inference, and Prediction, 2nd edition.  <[http://statweb.stanford.edu/~tibs/ElemStatLearn/](http://statweb.stanford.edu/~tibs/ElemStatLearn/)>
+
+Velloso, E., Bulling, A., Gellersen, H., Ugulino, W. & Fuks, H. (2013). Qualitative Activity Recognition of Weight Lifting Exercises. Proceedings of 4th International Conference in Cooperation with SIGCHI (Augmented Human '13).
+<[http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf](http://groupware.les.inf.puc-rio.br/public/papers/2013.Velloso.QAR-WLE.pdf)>
+
